@@ -1,0 +1,83 @@
+tools:
+  ov_init_repo:
+    signature: "ov_init_repo [<path>] [--name=<resource_name>] [--max_file_mb=<mb>]"
+    docstring: >
+      Initialize an OpenViking context database for the current repository (or the given path),
+      index the codebase into OpenViking, and remember the resulting root URI for later queries.
+      Use this once at the beginning of a task or whenever the repository contents have changed substantially.
+    arguments:
+      - name: path
+        type: string
+        description: >
+          Optional path to the project root to index. If not provided, uses the current working directory.
+        required: false
+      - name: name
+        type: string
+        description: >
+          When indexing a local directory, store it under viking://resources/<name>/... .
+          If omitted, defaults to the directory name.
+        required: false
+      - name: max_file_mb
+        type: float
+        description: >
+          When indexing a local directory, skip files larger than this size in megabytes (default: 2.0).
+        required: false
+
+  ov_search:
+    signature: "ov_search <query> [--uri=<viking_uri>] [--top_k=<k>]"
+    docstring: >
+      Perform a semantic search over the OpenViking context (by default the current repository resource)
+      and return the most relevant files and snippets. Prefer this over plain text search when you need
+      high-level understanding or cross-file context.
+    arguments:
+      - name: query
+        type: string
+        description: "The natural language query describing what to look for in the codebase or resources."
+        required: true
+      - name: uri
+        type: string
+        description: >
+          Optional explicit viking:// URI to search under. If omitted, uses the last repository root URI
+          stored by ov_init_repo.
+        required: false
+      - name: top_k
+        type: int
+        description: "Maximum number of results to return (default: 10)."
+        required: false
+
+  ov_overview:
+    signature: "ov_overview [--uri=<viking_uri>]"
+    docstring: >
+      Show a structured overview of the current OpenViking resource (by default the current repository),
+      including its high-level summary and main directories. Use this to quickly understand unfamiliar repos
+      or large documentation sets.
+    arguments:
+      - name: uri
+        type: string
+        description: >
+          Optional explicit viking:// URI of the resource to summarize. If omitted, uses the last repository
+          root URI stored by ov_init_repo.
+        required: false
+
+  ov_abstract:
+    signature: "ov_abstract [--uri=<viking_uri>]"
+    docstring: >
+      Show the L0/L1 abstract for the current OpenViking resource or a specific subdirectory/file.
+      This is cheaper than loading full content and is useful during planning.
+    arguments:
+      - name: uri
+        type: string
+        description: >
+          Optional explicit viking:// URI whose abstract should be shown. If omitted, uses the last repository
+          root URI stored by ov_init_repo.
+        required: false
+
+  _ov_state:
+    signature: "_ov_state"
+    docstring: >
+      Internal state command for the OpenViking bundle. Returns a JSON blob with OpenViking-related state
+      (for example the current repository root URI) that can be injected into prompt templates.
+    arguments: []
+
+state_command: "_ov_state"
+

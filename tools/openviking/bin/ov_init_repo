@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+
+"""
+Initialize an OpenViking context for the current repository (or a given path).
+
+This script:
+  1) Creates/opens an OpenViking database in OPENVIKING_DATA_DIR (default: ./ov_data)
+  2) Adds the target path as a resource
+  3) Waits for semantic processing to complete
+  4) Stores the resulting root URI in the SWE-agent registry under OPENVIKING_REPO_ROOT_URI
+
+The agent can later use ov_search / ov_overview / ov_abstract to query this context.
+"""
+
+import argparse
+import os
+from pathlib import Path
+
+from registry import registry  # type: ignore
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Initialize OpenViking for the current repository.")
+    parser.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="Path to the project root to index (default: current directory).",
+    )
+    parser.add_argument(
+        "--name",
+        default=None,
+        help=(
+            "When importing a directory, store it under viking://resources/<name>/... "
+            "(defaults to the directory name)."
+        ),
+    )
+    parser.add_argument(
+        "--max_file_mb",
+        type=float,
+        default=2.0,
+        help="When importing a directory, skip files larger than this size (default: 2MB).",
+    )
+    return parser.parse_args()
+
+
+def _should_skip_dir(p: Path) -> bool:
+    parts = set(p.parts)
+    return any(
+        d in parts
+        for d in (
+            ".git",
+            ".hg",
+            ".svn",
+            ".idea",
+            ".vscode",
+            "__pycache__",
+            ".pytest_cache",
+            "node_modules",
+            "dist",
+            "build",
+            "target",
+            ".venv",
+            "venv",
+        )
+    )
+
+
+def _looks_binary(p: Path) -> bool:
+    binary_exts = {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".svg",
+        ".ico",
+        ".pdf",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".7z",
+        ".rar",
+        ".jar",
+        ".war",
+        ".exe",
+        ".dll",
+        ".dylib",
+        ".so",
+        ".a",
+        ".o",
+        ".class",
+        ".pyc",
+        ".pyo",
+        ".pyd",
+        ".mp3",
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".wav",
+        ".flac",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+    }
+    return p.suffix.lower() in binary_exts
+
+
+def _iter_files_for_import(root: Path, max_bytes: int) -> list[Path]:
+    files: list[Path] = []
+    for p in root.rglob("*"):
+        try:
+            if p.is_dir():
+                continue
+            if not p.is_file():
+                continue
+            if _should_skip_dir(p.parent):
+                continue
+            if _looks_binary(p):
+                continue
+            st = p.stat()
+            if st.st_size > max_bytes:
+                continue
+            files.append(p)
+        except OSError:
+            continue
+    files.sort(key=lambda x: str(x))
+    return files
+
+
+def _safe_repo_folder_name(path: Path) -> str:
+    name = path.name.strip() or "repo"
+    return "".join(c if (c.isalnum() or c in ("-", "_", ".")) else "_" for c in name)
+
+
+def main() -> None:
+    args = parse_args()
+    target_path = Path(args.path).resolve()
+
+    data_dir = registry.get("OPENVIKING_DATA_DIR", os.environ.get("OPENVIKING_DATA_DIR", "./ov_data"))
+    data_dir_path = Path(data_dir).resolve()
+    data_dir_path.mkdir(parents=True, exist_ok=True)
+
+    try:
+        import openviking as ov  # type: ignore
+    except Exception as e:  # noqa: BLE001
+        print("[openviking] Failed to import openviking.")
+        print("[openviking] If you are using conda, make sure you ran: conda activate py311")
+        print(f"[openviking] Import error: {e}")
+        raise
+
+    client = ov.SyncOpenViking(path=str(data_dir_path))
+
+    try:
+        client.initialize()
+
+        if target_path.is_dir():
+            repo_name = args.name or _safe_repo_folder_name(target_path)
+            base_uri = f"viking://resources/{repo_name}"
+
+            # Ensure a stable root directory for the repository resource
+            try:
+                client.mkdir(base_uri)
+            except Exception:
+                pass
+
+            max_bytes = int(float(args.max_file_mb) * 1024 * 1024)
+            files = _iter_files_for_import(target_path, max_bytes=max_bytes)
+
+            print(f"[openviking] Importing directory: {target_path}")
+            print(f"[openviking] Target root: {base_uri}")
+            print(
+                f"[openviking] Files to import: {len(files)} (max_file_mb={args.max_file_mb:g})"
+            )
+
+            imported = 0
+            failed = 0
+            for f in files:
+                rel = f.relative_to(target_path).as_posix()
+                target = f"{repo_name}/{rel}"
+                try:
+                    client.add_resource(path=str(f), target=target)
+                    imported += 1
+                except Exception:
+                    failed += 1
+
+            root_uri = base_uri
+            print(f"[openviking] Imported files: {imported}, failed: {failed}")
+        else:
+            add_result = client.add_resource(path=str(target_path))
+            root_uri = add_result["root_uri"]
+
+        # Persist in registry for later commands
+        registry["OPENVIKING_REPO_ROOT_URI"] = root_uri
+        registry["OPENVIKING_DATA_DIR"] = str(data_dir_path)
+
+        print(f"[openviking] Initialized repository context at: {root_uri}")
+        print(f"[openviking] Data directory: {data_dir_path}")
+        print("[openviking] Waiting for semantic processing to complete...")
+        client.wait_processed()
+        print("[openviking] Semantic processing completed.")
+
+    except Exception as e:  # noqa: BLE001
+        print(f"[openviking] Error during initialization: {e}")
+        raise
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+if __name__ == "__main__":
+    main()
+

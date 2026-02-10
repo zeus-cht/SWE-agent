@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+
+"""
+Semantic search over an OpenViking context.
+
+By default, this searches the repository context initialized by `ov_init_repo`.
+You can override the search root with --uri=<viking_uri>.
+"""
+
+import argparse
+import os
+from pathlib import Path
+
+import openviking as ov  # type: ignore
+from registry import registry  # type: ignore
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Semantic search using OpenViking.")
+    parser.add_argument("query", help="Natural language query describing what to search for.")
+    parser.add_argument(
+        "--uri",
+        dest="uri",
+        default=None,
+        help="Explicit viking:// URI to search under. Defaults to the repository root URI stored by ov_init_repo.",
+    )
+    parser.add_argument(
+        "--top_k",
+        dest="top_k",
+        type=int,
+        default=10,
+        help="Maximum number of results to return (default: 10).",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    data_dir = registry.get("OPENVIKING_DATA_DIR", os.environ.get("OPENVIKING_DATA_DIR", "./ov_data"))
+    data_dir_path = Path(data_dir).resolve()
+    data_dir_path.mkdir(parents=True, exist_ok=True)
+
+    target_uri = args.uri or registry.get("OPENVIKING_REPO_ROOT_URI")
+    if not target_uri:
+        print(
+            "[openviking] No target URI found. "
+            "Please run `ov_init_repo` first or pass an explicit --uri=<viking_uri>."
+        )
+        raise SystemExit(1)
+
+    client = ov.SyncOpenViking(path=str(data_dir_path))
+
+    try:
+        client.initialize()
+        print(f"[openviking] Searching under: {target_uri}")
+        print(f"[openviking] Query: {args.query!r}")
+
+        results = client.find(args.query, target_uri=target_uri)
+        resources = getattr(results, "resources", []) or []
+
+        if not resources:
+            print("[openviking] No results found.")
+            return
+
+        print(f"[openviking] Top {min(len(resources), args.top_k)} results:")
+        for idx, r in enumerate(resources[: args.top_k], start=1):
+            uri = getattr(r, "uri", "")
+            score = getattr(r, "score", 0.0)
+            print(f"\n[{idx}] {uri} (score: {score:.4f})")
+
+            # Try to show a short preview to help the agent understand the hit
+            try:
+                content = client.read(uri)
+                snippet = content[:400].replace("\n", "\n    ")
+                print("    Preview:")
+                print(f"    {snippet}...")
+            except Exception:  # noqa: BLE001
+                # Fallback to abstract if detailed content is not available
+                try:
+                    abstract = client.abstract(uri)
+                    snippet = abstract[:400].replace("\n", "\n    ")
+                    print("    Abstract:")
+                    print(f"    {snippet}...")
+                except Exception:
+                    pass
+
+    except Exception as e:  # noqa: BLE001
+        print(f"[openviking] Error during search: {e}")
+        raise
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+if __name__ == "__main__":
+    main()
+
